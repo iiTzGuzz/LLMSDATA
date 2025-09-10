@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-prueba_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prueba_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-prueba_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  web:
+    build: .
+    depends_on:
+      - db
+    environment:
+      # DB
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-prueba_db}
+      POSTGRES_USER: ${POSTGRES_USER:-prueba_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prueba_pass}
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,web"
+      # Django
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-changeme}
+      DJANGO_DEBUG: "1"
+      ALLOWED_HOSTS: "*"
+      # OpenAI (si usas el agente)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - media:/app/src/media
+
+volumes:
+  pgdata:
+  media:
