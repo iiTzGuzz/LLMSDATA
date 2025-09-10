@@ -148,7 +148,10 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "SmartData – API",
     "DESCRIPTION": "ETL de archivo de ancho fijo, consulta por LLM y endpoints de consulta.",
     "VERSION": "1.0.0",
-    "SERVERS": [{"url": "http://localhost:8000"}],
+    "SERVERS": [
+                {"url": "http://localhost:8000"},
+                {"url": "https://llmsdata-production.up.railway.app"},
+],
 
     # que use assets locales (evita CDN en Docker)
     "SWAGGER_UI_DIST": "SIDECAR",
