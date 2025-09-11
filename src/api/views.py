@@ -3,8 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Optional
+import mimetypes
+from time import time as _now
 
 from django.conf import settings
+from django.http import FileResponse, Http404
+from django.utils.http import http_date
 
 from rest_framework import status, serializers, permissions
 from rest_framework.views import APIView
@@ -20,7 +24,7 @@ from drf_spectacular.utils import (
 
 from .models import Registro
 from .services import procesar_archivo_y_guardar
-from .llm_agent import get_agent  # 👈 usa el getter lazy
+from .llm_agent import get_agent  # 👈 getter lazy
 from app.parser import normalize_filename
 
 
@@ -87,6 +91,13 @@ def _serialize_registro(r: Registro) -> Dict[str, Any]:
 # --------------------------
 # Serializers para Swagger
 # --------------------------
+class ExportsSerializer(serializers.Serializer):
+    json_path = serializers.CharField(required=False, allow_null=True)
+    csv_path = serializers.CharField(required=False, allow_null=True)
+    json_url = serializers.CharField(required=False, allow_null=True)
+    csv_url = serializers.CharField(required=False, allow_null=True)
+
+
 class UploadRequestSerializer(serializers.Serializer):
     file = serializers.FileField(help_text="Archivo de ancho fijo.")
     fecha = serializers.CharField(
@@ -98,6 +109,7 @@ class UploadResponseSerializer(serializers.Serializer):
     ok = serializers.BooleanField()
     saved_as = serializers.CharField()
     insertados = serializers.IntegerField()
+    exports = ExportsSerializer(required=False)
 
 
 class PathRequestSerializer(serializers.Serializer):
@@ -109,6 +121,7 @@ class PathRequestSerializer(serializers.Serializer):
 class OkCountResponseSerializer(serializers.Serializer):
     ok = serializers.BooleanField()
     insertados = serializers.IntegerField()
+    exports = ExportsSerializer(required=False)
 
 
 class UltimosRegistrosResponseSerializer(serializers.Serializer):
@@ -127,6 +140,19 @@ class ConsultaLLMResponseSerializer(serializers.Serializer):
     output = serializers.DictField(required=False)
 
 
+class FileMetaSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    size = serializers.IntegerField()
+    modified = serializers.CharField()
+    download_url = serializers.CharField()
+
+
+class ListExportsResponseSerializer(serializers.Serializer):
+    ok = serializers.BooleanField()
+    count = serializers.IntegerField()
+    files = serializers.ListField(child=FileMetaSerializer())
+
+
 # --------------------------
 # Vistas
 # --------------------------
@@ -138,20 +164,12 @@ class ProcesarArchivoUploadView(APIView):
     permission_classes = (permissions.AllowAny,)
 
     @extend_schema(
-    tags=["Procesamiento"],
-    request={
-        "multipart/form-data": inline_serializer(
-            name="UploadForm",
-            fields={
-                "file": serializers.FileField(help_text="Archivo de ancho fijo."),
-                "fecha": serializers.CharField(required=False, help_text="YYYYMMDD (opcional)"),
-            },
-        )
-    },
-    responses={
-        201: UploadResponseSerializer,
-        400: inline_serializer(name="ErrorResponse", fields={"detail": serializers.CharField()}),
-    },
+        tags=["Procesamiento"],
+        request=UploadRequestSerializer,
+        responses={
+            201: UploadResponseSerializer,
+            400: inline_serializer(name="ErrorResponse", fields={"detail": serializers.CharField()}),
+        },
     )
     def post(self, request, *args, **kwargs):
         file_obj = request.FILES.get("file")
@@ -182,8 +200,11 @@ class ProcesarArchivoUploadView(APIView):
         except Exception as e:
             return Response({"detail": f"Error procesando archivo: {e}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({"ok": True, "saved_as": str(dest_path), "insertados": insertados},
-                        status=status.HTTP_201_CREATED)
+        outs = getattr(procesar_archivo_y_guardar, "_last_outputs", {})
+        return Response(
+            {"ok": True, "saved_as": str(dest_path), "insertados": insertados, "exports": outs},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ProcesarArchivoPathView(APIView):
@@ -221,7 +242,8 @@ class ProcesarArchivoPathView(APIView):
         except Exception as e:
             return Response({"detail": f"Error procesando archivo: {e}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({"ok": True, "insertados": insertados}, status=status.HTTP_200_OK)
+        outs = getattr(procesar_archivo_y_guardar, "_last_outputs", {})
+        return Response({"ok": True, "insertados": insertados, "exports": outs}, status=status.HTTP_200_OK)
 
 
 class UltimosRegistrosView(APIView):
@@ -284,12 +306,69 @@ class ConsultaLLMView(APIView):
         except Exception as e:
             return Response({"ok": False, "detail": f"Error ejecutando el agente: {e}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        payload: Dict[str, Any]
         if isinstance(result, str):
-            payload = {"ok": True, "instruccion": instr, "output": {"text": result}}
+            payload: Dict[str, Any] = {"ok": True, "instruccion": instr, "output": {"text": result}}
         elif isinstance(result, dict):
             payload = {"ok": True, "instruccion": instr, "output": result}
         else:
             payload = {"ok": True, "instruccion": instr, "output": {"result": str(result)}}
 
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class ListarExportsView(APIView):
+    """
+    Lista los archivos exportados (CSV/JSON) disponibles para descarga.
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    @extend_schema(
+        tags=["Exports"],
+        responses={200: ListExportsResponseSerializer},
+    )
+    def get(self, request, *args, **kwargs):
+        out_dir = Path(settings.EXPORT_DIR)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        files = []
+        for p in sorted(out_dir.glob("*")):
+            if p.is_file():
+                stat = p.stat()
+                files.append({
+                    "name": p.name,
+                    "size": stat.st_size,
+                    "modified": http_date(stat.st_mtime),
+                    "download_url": request.build_absolute_uri(
+                        f"/api/exports/descargar/{p.name}"
+                    ),
+                })
+        return Response({"ok": True, "count": len(files), "files": files}, status=200)
+
+
+class DescargarExportView(APIView):
+    """
+    Descarga un archivo exportado por nombre.
+    """
+    permission_classes = (permissions.AllowAny,)
+
+    @extend_schema(
+        tags=["Exports"],
+        parameters=[OpenApiParameter(name="filename", required=True, type=str, location=OpenApiParameter.PATH)],
+        responses={200: {"content": {"application/octet-stream": {}}}},
+    )
+    def get(self, request, filename: str, *args, **kwargs):
+        safe = Path(filename).name  # evita path traversal
+        p = Path(settings.EXPORT_DIR) / safe
+        if not p.exists() or not p.is_file():
+            raise Http404("Archivo no encontrado")
+
+        ctype, _ = mimetypes.guess_type(p.name)
+        resp = FileResponse(
+            p.open("rb"),
+            as_attachment=True,
+            filename=p.name,
+            content_type=ctype or "application/octet-stream",
+        )
+        resp["Last-Modified"] = http_date(p.stat().st_mtime)
+        resp["Cache-Control"] = "no-store"
+        resp["X-Generated-At"] = http_date(_now())
+        return resp

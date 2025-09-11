@@ -63,9 +63,9 @@ def _to_decimal(s: str) -> Optional[Decimal]:
 
 
 def _write_outputs(records: List[dict], base_name: str) -> dict:
-    """Escribe JSON y CSV bajo media/outputs y devuelve rutas absolutas y URLs."""
-    out_dir = Path(settings.MEDIA_ROOT) / "outputs"
+    out_dir = Path(settings.EXPORT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
+
     json_path = out_dir / f"{base_name}.json"
     csv_path = out_dir / f"{base_name}.csv"
 
@@ -78,13 +78,16 @@ def _write_outputs(records: List[dict], base_name: str) -> dict:
         for r in records:
             writer.writerow({k: r.get(k, "") for k in COLUMNS_DB})
 
-    json_url = f"{settings.MEDIA_URL}outputs/{json_path.name}"
-    csv_url = f"{settings.MEDIA_URL}outputs/{csv_path.name}"
+
+    rel = Path(settings.MEDIA_ROOT).resolve()
+    json_rel = Path(json_path).resolve().relative_to(rel) if json_path.is_file() else None
+    csv_rel  = Path(csv_path).resolve().relative_to(rel)  if csv_path.is_file()  else None
+
     return {
         "json_path": str(json_path),
         "csv_path": str(csv_path),
-        "json_url": json_url,
-        "csv_url": csv_url,
+        "json_url": f"{settings.MEDIA_URL}{json_rel}".replace("\\", "/") if json_rel else None,
+        "csv_url": f"{settings.MEDIA_URL}{csv_rel}".replace("\\", "/")   if csv_rel  else None,
     }
 
 
