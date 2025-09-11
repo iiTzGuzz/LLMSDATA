@@ -127,6 +127,17 @@ Diccionario de columnas (usa EXACTAMENTE estos nombres en SQL):
 - fecha_nacimiento      (edad: EXTRACT(YEAR FROM AGE(CURRENT_DATE, fecha_nacimiento)))
 - fecha_venta
 
+Convenciones de búsqueda de texto (muy importantes):
+- Si el usuario pide “se llama X”, “clientes llamados X”, “que contenga X”, o habla en lenguaje natural sin precisión,
+  usa coincidencia parcial:  ILIKE '%X%'  (no igualdad exacta).
+- Usa coincidencia insensible a mayúsculas y considera tildes si hay extensión unaccent:
+  preferir:  unaccent(col) ILIKE unaccent('%X%')  cuando sea posible.
+- Si el usuario pide explícitamente “exactamente X” o “igual a X”, entonces sí:  = 'X'  (o ILIKE 'X' sin %).
+- Si pide “empiece por X” => ILIKE 'X%'; “termine en X” => ILIKE '%X'.
+- Al comparar nombres, usa TRIM/btrim para evitar espacios: btrim(nombre).
+- Para productos/pólizas/correos, usa igualdad exacta (sin ILIKE/LIKE) salvo que el usuario pida otra cosa.
+
+
 Reglas de consulta:
 - Solo SELECT/CTE.
 - Si piden listados, ORDER BY id DESC y LIMIT 50 (o el límite que pidan).
