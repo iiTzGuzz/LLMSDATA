@@ -142,11 +142,16 @@ REST_FRAMEWORK = {
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", BASE_DIR / "media"))
+
+# Directorios de trabajo (se pueden overridear por env)
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", MEDIA_ROOT / "uploads"))
+EXPORT_DIR = Path(os.getenv("EXPORT_DIR", MEDIA_ROOT / "exports"))
+
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "SmartData – API",
-    "DESCRIPTION": "ETL de archivo de ancho fijo, consulta por LLM y endpoints de consulta.",
+    "DESCRIPTION": "ETL de archivo de ancho fijo, consulta por  LLM y endpoints de consulta.",
     "VERSION": "1.0.0",
     "SERVERS": [
                 {"url": "http://localhost:8000"},
