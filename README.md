@@ -1,4 +1,4 @@
-# SmartData – Backend (Django + DRF)
+# SData – Backend (Django + DRF)
 
 Backend para cargar archivos de **ancho fijo**, normalizarlos, **insertar en PostgreSQL**, exportar **CSV/JSON**, y consultar con un **agente LLM**. Incluye **Swagger UI** con `drf-spectacular`.
 
@@ -157,7 +157,7 @@ Abre: `http://127.0.0.1:8000/`
 
 Rutas (ya montadas bajo `/api/`):
 - **OpenAPI JSON**: `GET /api/schema/`
-- **Swagger UI**: `GET /api/schema/swagger-ui/`
+- **Swagger UI**: `[GET /api/schema/swagger-ui/](https://llmsdata-production.up.railway.app/api/schema/swagger-ui/#/)`
 - **ReDoc**: `GET /api/schema/redoc/`
 
 > Si en producción no carga el CSS/JS del Swagger, asegúrate de:
