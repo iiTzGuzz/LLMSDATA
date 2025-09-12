@@ -25,14 +25,44 @@ def _is_safe_sql(sql: str) -> bool:
     return not any(k in sql_clean for k in inseguras)
 
 
+def _strip_unaccent(sql: str) -> str:
+    """
+    Elimina llamadas unaccent(...) para fallback cuando la extensión no existe.
+    Implementación simple que reemplaza unaccent(expr) -> expr.
+    """
+    return re.sub(r"\bunaccent\s*\(([^()]+)\)", r"\1", sql, flags=re.I)
+
+
 @tool("procesar_archivo", return_direct=True)
 def procesar_archivo(path: str) -> Dict[str, Any]:
     """Procesa un archivo de ancho fijo e inserta registros en DB."""
     try:
         count = procesar_archivo_y_guardar(path)
-        return {"ok": True, "insertados": count}
+        return {"ok": True, "insertados": count, "tool_used": "procesar_archivo"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "tool_used": "procesar_archivo"}
+
+
+def _run_sql_to_json(sql: str) -> Dict[str, Any]:
+    with connection.cursor() as cur:
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description] if cur.description else []
+        rows = cur.fetchall()
+    data = [dict(zip(cols, r)) for r in rows] if cols else []
+    return {"ok": True, "sql": sql, "rows": data, "row_count": len(data), "tool_used": "consultar_sql_json"}
+
+
+def _run_sql_to_text(sql: str) -> Dict[str, Any]:
+    with connection.cursor() as cur:
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description] if cur.description else []
+        rows = cur.fetchall()
+    header = " | ".join(cols) if cols else ""
+    lines = [header] if header else []
+    for r in rows:
+        lines.append(" | ".join("" if v is None else str(v) for v in r))
+    text = "\n".join(lines)
+    return {"ok": True, "sql": sql, "text": text, "row_count": len(rows), "tool_used": "consultar_sql_texto"}
 
 
 @tool("consultar_sql_json", return_direct=True)
@@ -40,48 +70,55 @@ def consultar_sql_json(sql: str) -> Dict[str, Any]:
     """
     Ejecuta SELECTs contra api_registro y devuelve filas como lista de objetos JSON.
     Rechaza cualquier cosa que no sea SELECT/CTE.
+    Hace fallback si falla por ausencia de unaccent.
     """
     if not _is_safe_sql(sql):
-        return {"ok": False, "error": "Solo se permiten consultas SELECT/CTE."}
-    # Seguridad adicional: la consulta debe apuntar a la tabla principal
+        return {"ok": False, "error": "Solo se permiten consultas SELECT/CTE.", "tool_used": "consultar_sql_json"}
     if "API_REGISTRO" not in sql.upper():
-        return {"ok": False, "error": "La consulta debe apuntar a la tabla api_registro."}
+        return {"ok": False, "error": "La consulta debe apuntar a la tabla api_registro.", "tool_used": "consultar_sql_json"}
 
     try:
-        with connection.cursor() as cur:
-            cur.execute(sql)
-            cols = [c[0] for c in cur.description] if cur.description else []
-            rows = cur.fetchall()
-        data = [dict(zip(cols, r)) for r in rows] if cols else []
-        return {"ok": True, "sql": sql, "rows": data, "row_count": len(data)}
+        return _run_sql_to_json(sql)
     except Exception as e:
-        return {"ok": False, "error": str(e), "sql": sql}
+        err = str(e)
+        # Fallback automático si no existe unaccent
+        if "unaccent" in err.lower():
+            try:
+                sql2 = _strip_unaccent(sql)
+                out = _run_sql_to_json(sql2)
+                out["notice"] = "fallback_sin_unaccent"
+                out["original_sql"] = sql
+                return out
+            except Exception as e2:
+                return {"ok": False, "error": str(e2), "sql": sql2, "tool_used": "consultar_sql_json"}
+        return {"ok": False, "error": err, "sql": sql, "tool_used": "consultar_sql_json"}
 
 
 @tool("consultar_sql_texto", return_direct=True)
 def consultar_sql_texto(sql: str) -> Dict[str, Any]:
     """
     Igual que consultar_sql_json pero devuelve texto tabulado simple.
-    Úsalo solo si el usuario pide texto crudo/tablas.
+    Hace fallback si falla por ausencia de unaccent.
     """
     if not _is_safe_sql(sql):
-        return {"ok": False, "error": "Solo se permiten consultas SELECT/CTE."}
+        return {"ok": False, "error": "Solo se permiten consultas SELECT/CTE.", "tool_used": "consultar_sql_texto"}
     if "API_REGISTRO" not in sql.upper():
-        return {"ok": False, "error": "La consulta debe apuntar a la tabla api_registro."}
+        return {"ok": False, "error": "La consulta debe apuntar a la tabla api_registro.", "tool_used": "consultar_sql_texto"}
 
     try:
-        with connection.cursor() as cur:
-            cur.execute(sql)
-            cols = [c[0] for c in cur.description] if cur.description else []
-            rows = cur.fetchall()
-        header = " | ".join(cols) if cols else ""
-        lines = [header] if header else []
-        for r in rows:
-            lines.append(" | ".join("" if v is None else str(v) for v in r))
-        text = "\n".join(lines)
-        return {"ok": True, "sql": sql, "text": text, "row_count": len(rows)}
+        return _run_sql_to_text(sql)
     except Exception as e:
-        return {"ok": False, "error": str(e), "sql": sql}
+        err = str(e)
+        if "unaccent" in err.lower():
+            try:
+                sql2 = _strip_unaccent(sql)
+                out = _run_sql_to_text(sql2)
+                out["notice"] = "fallback_sin_unaccent"
+                out["original_sql"] = sql
+                return out
+            except Exception as e2:
+                return {"ok": False, "error": str(e2), "sql": sql2, "tool_used": "consultar_sql_texto"}
+        return {"ok": False, "error": err, "sql": sql, "tool_used": "consultar_sql_texto"}
 
 
 tools = [procesar_archivo, consultar_sql_json, consultar_sql_texto]
@@ -99,52 +136,80 @@ Objetivo:
 - Responde SIEMPRE con JSON válido y útil.
 - Incluye: tool_used y, si es consulta: sql, rows (máx 50) y row_count.
 
-Tabla: api_registro (ver columnas en el modelo).
-Notas:
-- 'menores de 18 años': edad con CURRENT_DATE - fecha_nacimiento.
-- Limita a 50 con ORDER BY id DESC cuando aplique.
+TABLA: usa SIEMPRE api_registro (nombre exacto). Solo SELECT/CTE, nunca DML/DDL.
 
-Reglas de edad:
-- Mayores de 18: WHERE fecha_nacimiento <= CURRENT_DATE - INTERVAL '18 years'
-- Menores de 18: WHERE fecha_nacimiento >  CURRENT_DATE - INTERVAL '18 years'
-- Evita expresiones como (CURRENT_DATE - fecha_nacimiento) >= INTERVAL '18 years'
+Reglas de texto (búsquedas):
+- Si el usuario dice “se llama X”, “llamados X”, “que contenga X”, etc., interpreta como coincidencia parcial: ILIKE '%X%'.
+- Solo usa igualdad exacta (= 'X') si pide “exactamente X”.
+- Usa unaccent(col) ILIKE unaccent('%X%') cuando sea posible. Si falla, ILIKE simple.
 
-TABLA: usa SIEMPRE api_registro.
+Reglas de EDAD:
+- Evita (CURRENT_DATE - fecha_nacimiento) >= INTERVAL 'N years'.
+- Mayores de 18:
+    WHERE fecha_nacimiento <= CURRENT_DATE - INTERVAL '18 years'
+  o: WHERE EXTRACT(YEAR FROM AGE(CURRENT_DATE, fecha_nacimiento)) >= 18
+- Menores de 18:
+    WHERE fecha_nacimiento  > CURRENT_DATE - INTERVAL '18 years'
+  o: WHERE EXTRACT(YEAR FROM AGE(CURRENT_DATE, fecha_nacimiento)) < 18
+
+LIMIT y ORDEN:
+- Listados: ORDER BY id DESC y LIMIT 50 (salvo que pidan otro límite).
 
 Diccionario de columnas (usa EXACTAMENTE estos nombres en SQL):
 - nombre
 - poliza
 - producto
-- valor_prima           (sinónimos del usuario: "prima", "valor de la prima")
+- valor_prima           (sinónimos: "prima", "valor de la prima")
 - correo_electronico    (sinónimos: "correo", "email")
 - created_at            (sinónimos: "fecha_creacion", "fecha de creación")
 - telefono_1, telefono_2, telefono_3
-  • Si piden "teléfono principal": usa COALESCE(NULLIF(telefono_1,''), NULLIF(telefono_2,''), NULLIF(telefono_3,'')) AS telefono_principal
-- mejor_canal           (sinónimos: "canal preferido"; para WhatsApp usa LOWER(mejor_canal) = 'whatsapp')
+  · Teléfono principal: COALESCE(NULLIF(telefono_1,''), NULLIF(telefono_2,''), NULLIF(telefono_3,'')) AS telefono_principal
+- whatsapp (boolean), telefono (boolean), texto (boolean), email (boolean), fisica (boolean)
 - estado_debito, causal_rechazo
-  • Si piden “débitos rechazados”: filtra con (estado_debito ILIKE 'rechaz%' OR NULLIF(causal_rechazo,'') IS NOT NULL)
-  • Para “últimos N días” usa created_at >= CURRENT_DATE - INTERVAL '<N> days'
-- fecha_nacimiento      (edad: EXTRACT(YEAR FROM AGE(CURRENT_DATE, fecha_nacimiento)))
-- fecha_venta
+  · “débitos rechazados”: (estado_debito ILIKE 'rechaz%' OR NULLIF(causal_rechazo,'') IS NOT NULL)
+  · “últimos N días”: created_at >= CURRENT_DATE - INTERVAL '<N> days'
+- fecha_nacimiento, fecha_venta
 
-Convenciones de búsqueda de texto (muy importantes):
-- Si el usuario pide “se llama X”, “clientes llamados X”, “que contenga X”, o habla en lenguaje natural sin precisión,
-  usa coincidencia parcial:  ILIKE '%X%'  (no igualdad exacta).
-- Usa coincidencia insensible a mayúsculas y considera tildes si hay extensión unaccent:
-  preferir:  unaccent(col) ILIKE unaccent('%X%')  cuando sea posible.
-- Si el usuario pide explícitamente “exactamente X” o “igual a X”, entonces sí:  = 'X'  (o ILIKE 'X' sin %).
-- Si pide “empiece por X” => ILIKE 'X%'; “termine en X” => ILIKE '%X'.
-- Al comparar nombres, usa TRIM/btrim para evitar espacios: btrim(nombre).
-- Para productos/pólizas/correos, usa igualdad exacta (sin ILIKE/LIKE) salvo que el usuario pida otra cosa.
+MEJOR CANAL (cálculo dinámico, NO usar la columna mejor_canal almacenada):
+- Prioridad: WhatsApp > Teléfono (llamada) > Mensaje de texto (SMS) > Correo electrónico > Correspondencia física.
+- Reglas (requiere dato disponible para ese canal):
+  · WhatsApp/Teléfono/SMS: requieren teléfono principal no vacío.
+  · Correo: requiere correo_electronico no vacío y con '@'.
+  · Física: sin requisito adicional.
+- Implementa SIEMPRE este CASE (ajústalo a la consulta):
+  CASE
+    WHEN whatsapp AND COALESCE(NULLIF(telefono_1,''), NULLIF(telefono_2,''), NULLIF(telefono_3,'')) IS NOT NULL THEN 'whatsapp'
+    WHEN telefono AND COALESCE(NULLIF(telefono_1,''), NULLIF(telefono_2,''), NULLIF(telefono_3,'')) IS NOT NULL THEN 'telefono'
+    WHEN texto    AND COALESCE(NULLIF(telefono_1,''), NULLIF(telefono_2,''), NULLIF(telefono_3,'')) IS NOT NULL THEN 'texto'
+    WHEN email    AND NULLIF(correo_electronico,'') IS NOT NULL AND POSITION('@' IN correo_electronico) > 1 THEN 'correo'
+    WHEN fisica   THEN 'fisica'
+    ELSE 'sin_informacion'
+  END AS mejor_canal_calc
 
+- Si el usuario pide “mejor canal sea WhatsApp”, filtra sobre ese cálculo:
+  · Opción A (subconsulta recomendable):
+      SELECT *
+      FROM (
+        SELECT
+          ...,
+          COALESCE(NULLIF(telefono_1,''), NULLIF(telefono_2,''), NULLIF(telefono_3,'')) AS telefono_principal,
+          CASE ... END AS mejor_canal_calc
+        FROM api_registro
+      ) t
+      WHERE LOWER(mejor_canal_calc) = 'whatsapp'
+      ORDER BY id DESC
+      LIMIT 50;
 
-Reglas de consulta:
-- Solo SELECT/CTE.
-- Si piden listados, ORDER BY id DESC y LIMIT 50 (o el límite que pidan).
+  · Opción B (repetir CASE en WHERE) está permitido, pero es preferible la subconsulta.
+
+Notas:
+- Para “teléfono principal”, expón el alias telefono_principal.
+- Para WhatsApp u otros canales en filtros, usa comparación insensible a mayúsculas: LOWER(mejor_canal_calc) = 'whatsapp'.
+
+Reglas de respuesta:
 - Devuelve SIEMPRE JSON con: tool_used, sql, rows (máx 50) y row_count.
 - Si el usuario habla de "procesar" archivos, usa la herramienta procesar_archivo.
 """
-
 
 _agent: Optional[AgentExecutor] = None
 
