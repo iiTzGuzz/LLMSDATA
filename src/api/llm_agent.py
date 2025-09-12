@@ -201,7 +201,7 @@ TABLAS/VISTAS:
              ELSE NULL
            END AS telefono_principal,
            CASE
-             WHEN correo ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$' THEN correo
+             WHEN correo ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{{2,}}$' THEN correo
              ELSE NULL
            END AS correo_valido
     FROM norm
