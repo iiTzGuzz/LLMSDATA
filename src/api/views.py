@@ -165,7 +165,7 @@ class ProcesarArchivoUploadView(APIView):
 
     @extend_schema(
         tags=["Procesamiento"],
-        request=UploadRequestSerializer,
+        request={"multipart/form-data": UploadRequestSerializer},
         responses={
             201: UploadResponseSerializer,
             400: inline_serializer(name="ErrorResponse", fields={"detail": serializers.CharField()}),
@@ -176,7 +176,7 @@ class ProcesarArchivoUploadView(APIView):
         if not file_obj:
             return Response({"detail": "Falta campo 'file'."}, status=status.HTTP_400_BAD_REQUEST)
 
-        fecha: Optional[str] = request.data.get("fecha")
+        fecha: Optional[str] = request.data.get("fecha") or None
         if fecha and (len(fecha) != 8 or not fecha.isdigit()):
             return Response({"detail": "El campo 'fecha' debe ser YYYYMMDD."}, status=status.HTTP_400_BAD_REQUEST)
 
